@@ -2,14 +2,14 @@
   "name": "AQL Vision",
   "short_name": "AQL Vision",
   "description": "Monitorizacao operacional AQL Vision",
-  "start_url": "/VisionSite/demo",
-  "scope": "/VisionSite/",
+  "start_url": "/demo",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#050b18",
   "theme_color": "#050b18",
   "icons": [
     {
-      "src": "/VisionSite/aql-engineering-logo.png",
+      "src": "/aql-engineering-logo.png",
       "sizes": "312x312",
       "type": "image/png",
       "purpose": "any maskable"

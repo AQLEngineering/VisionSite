@@ -11,10 +11,10 @@ self.addEventListener('push', (event) => {
   let data = {
     title: 'AQL Vision',
     body: 'Novo alerta operacional.',
-    icon: '/VisionSite/aql-engineering-logo.png',
-    badge: '/VisionSite/aql-engineering-logo.png',
+    icon: '/aql-engineering-logo.png',
+    badge: '/aql-engineering-logo.png',
     tag: 'aql-vision-alert',
-    data: { url: '/VisionSite/demo' },
+    data: { url: '/demo' },
     requireInteraction: true
   };
 
@@ -48,7 +48,7 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   if (event.action === 'close') return;
 
-  const targetUrl = event.notification.data?.url || '/VisionSite/demo';
+  const targetUrl = event.notification.data?.url || '/demo';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
