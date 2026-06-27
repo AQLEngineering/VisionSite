@@ -1,3 +1,0 @@
-AQL Vision deploy check
-
-If this file is visible at /aql-deploy-check.txt, the web root is receiving non-empty static files.
