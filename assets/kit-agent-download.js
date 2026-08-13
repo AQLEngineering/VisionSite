@@ -60,6 +60,7 @@ async function downloadKitAgent(kitId) {
 }
 
 function decorateEdgeEditor() {
+  if (!document.body?.textContent?.includes('Editar Unidades Edge')) return;
   const saveButton = Array.from(document.querySelectorAll('button')).find((button) => {
     if (button.textContent?.trim() !== 'Guardar') return false;
     let ancestor = button.parentElement;
@@ -104,10 +105,20 @@ function decorateEdgeEditor() {
   footer.insertBefore(button, footer.firstChild);
 }
 
+let decorationScheduled = false;
+function scheduleEdgeEditorDecoration() {
+  if (decorationScheduled) return;
+  decorationScheduled = true;
+  window.requestAnimationFrame(() => {
+    decorationScheduled = false;
+    decorateEdgeEditor();
+  });
+}
+
 document.addEventListener('click', (event) => {
   const node = event.target instanceof Element ? event.target.closest('.react-flow__node[data-id^="kit:"]') : null;
   if (node) selectedKitId = node.getAttribute('data-id').slice(4);
 }, true);
 
-new MutationObserver(decorateEdgeEditor).observe(document.documentElement, { childList: true, subtree: true });
-decorateEdgeEditor();
+new MutationObserver(scheduleEdgeEditorDecoration).observe(document.documentElement, { childList: true, subtree: true });
+scheduleEdgeEditorDecoration();
