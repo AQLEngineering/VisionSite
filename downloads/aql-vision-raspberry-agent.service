@@ -1,0 +1,15 @@
+[Unit]
+Description=AQL Vision Raspberry Camera Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=/etc/aql-vision/agent.env
+ExecStart=/usr/bin/python3 /opt/aql-vision/aql_vision_raspberry_agent.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
