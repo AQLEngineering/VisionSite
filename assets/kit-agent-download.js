@@ -2,7 +2,6 @@ const SUPABASE_URL = 'https://djeijlkqypvaznmlvtxe.supabase.co';
 const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqZWlqbGtxeXB2YXpubWx2dHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0MjE0OTksImV4cCI6MjA3Nzk5NzQ5OX0.h7bUzjND3FYyCmL-WX0x7vC3Ll9AZXkzlW0etOK4sDI';
 let selectedKitId = null;
 
-const apiHeaders = { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` };
 const safeName = (value) => String(value || 'kit').normalize('NFKD').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
 
 function downloadBlob(content, type, name) {
@@ -16,44 +15,40 @@ function downloadBlob(content, type, name) {
   URL.revokeObjectURL(url);
 }
 
-async function restRows(table, query) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers: apiHeaders });
-  if (!response.ok) throw new Error(`${table}: HTTP ${response.status}`);
-  return response.json();
+function accessToken() {
+  for (const key of ['visionAlertsToken', 'aql_auth_token']) {
+    const value = window.localStorage.getItem(key);
+    if (value?.split('.').length === 3) return value;
+  }
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index) || '';
+    if (!key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+    try {
+      const session = JSON.parse(window.localStorage.getItem(key) || '{}');
+      const value = session?.access_token || session?.currentSession?.access_token;
+      if (value) return value;
+    } catch {}
+  }
+  return '';
 }
 
 async function downloadKitAgent(kitId) {
-  const encoded = encodeURIComponent(kitId);
-  const [kits, cameras, sensors] = await Promise.all([
-    restRows('aql_kits', `kit_id=eq.${encoded}&select=*`),
-    restRows('aql_cameras', `kit_id=eq.${encoded}&select=*`),
-    restRows('aql_sensors', `kit_id=eq.${encoded}&select=*`),
-  ]);
-  const kit = kits[0];
-  if (!kit) throw new Error('Kit não encontrado');
-
-  const configuration = {
-    schema: 'aql-kit.v3',
-    generated_at: new Date().toISOString(),
-    authentication: { header: 'X-AQL-Device-Token', value: '<AQL_DEVICE_TOKEN>' },
-    endpoints: {
-      heartbeat: `${SUPABASE_URL}/functions/v1/vision-device-heartbeat`,
-      live_capture: `${SUPABASE_URL}/functions/v1/vision-captures/live`,
-      sensor_ingest: `${SUPABASE_URL}/functions/v1/vision-sensor-ingest`,
-    },
-    runtime: {
-      heartbeat_interval_seconds: 120,
-      frame_interval_ms: kit.frame_interval_ms ?? 2000,
-      capture_interval_seconds: kit.capture_interval_seconds ?? 30,
-      offline_buffer_hours: kit.offline_buffer_hours ?? 72,
-      bulk_batch_size: kit.bulk_batch_size ?? 500,
-    },
-    kit,
-    cameras,
-    sensors,
-  };
-
-  downloadBlob(JSON.stringify(configuration, null, 2), 'application/json;charset=utf-8', `aql-kit-${safeName(kit.name)}.json`);
+  const sessionToken = accessToken();
+  if (!sessionToken) throw new Error('Sessão autenticada não encontrada. Volta a iniciar sessão.');
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/vision-device-agent-config`, {
+    method: 'POST',
+    headers: { apikey: ANON_KEY, Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kit_id: kitId }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  const kitName = payload.configuration?.kit?.name || kitId;
+  downloadBlob(payload.env_text, 'text/plain;charset=utf-8', `agent-${safeName(kitName)}.env`);
+  window.setTimeout(() => downloadBlob(
+    JSON.stringify(payload.configuration, null, 2),
+    'application/json;charset=utf-8',
+    `aql-kit-${safeName(kitName)}.json`,
+  ), 200);
   window.setTimeout(() => {
     const link = document.createElement('a');
     link.href = '/downloads/aql-vision-raspberry-package.zip';
@@ -61,7 +56,7 @@ async function downloadKitAgent(kitId) {
     document.body.appendChild(link);
     link.click();
     link.remove();
-  }, 250);
+  }, 450);
 }
 
 function decorateEdgeEditor() {
@@ -100,7 +95,7 @@ function decorateEdgeEditor() {
       button.textContent = 'Descarregado';
     } catch (error) {
       console.error('AQL kit agent download failed', error);
-      window.alert('Não foi possível preparar o agente deste kit.');
+      window.alert(`Não foi possível preparar o agente deste kit. ${error instanceof Error ? error.message : ''}`);
       button.textContent = 'Descarregar agente';
     } finally {
       button.disabled = false;
