@@ -64,15 +64,22 @@ async function downloadKitAgent(kitId) {
   }, 250);
 }
 
-function edgeEditor() {
-  return Array.from(document.querySelectorAll('h1,h2,h3')).find((heading) => heading.textContent?.trim() === 'Editar Unidades Edge')?.closest('[role="dialog"]')
-    ?? Array.from(document.querySelectorAll('h1,h2,h3')).find((heading) => heading.textContent?.trim() === 'Editar Unidades Edge')?.parentElement?.parentElement;
-}
-
 function decorateEdgeEditor() {
-  const editor = edgeEditor();
-  if (!editor || editor.querySelector('[data-aql-kit-agent-button="true"]')) return;
-  const saveButton = Array.from(editor.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Guardar');
+  const saveButton = Array.from(document.querySelectorAll('button')).find((button) => {
+    if (button.textContent?.trim() !== 'Guardar') return false;
+    let ancestor = button.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      if (ancestor.textContent?.includes('Editar Unidades Edge')) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  });
+  if (!saveButton) return;
+  let editor = saveButton.parentElement;
+  while (editor && editor !== document.body && !editor.textContent?.includes('Editar Unidades Edge')) {
+    editor = editor.parentElement;
+  }
+  if (!editor || editor === document.body || editor.querySelector('[data-aql-kit-agent-button="true"]')) return;
   const footer = saveButton?.parentElement;
   if (!footer) return;
 
