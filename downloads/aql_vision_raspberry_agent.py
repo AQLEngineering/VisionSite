@@ -22,6 +22,7 @@ import requests
 
 SUPABASE_URL = os.getenv("AQL_SUPABASE_URL", "https://djeijlkqypvaznmlvtxe.supabase.co").rstrip("/")
 UPLOAD_URL = os.getenv("AQL_CAPTURE_UPLOAD_URL", f"{SUPABASE_URL}/functions/v1/vision-captures/live")
+HEARTBEAT_URL = os.getenv("AQL_HEARTBEAT_URL", f"{SUPABASE_URL}/functions/v1/vision-device-heartbeat")
 DEVICE_TOKEN = os.getenv("AQL_DEVICE_TOKEN", "").strip()
 
 KIT_ID = os.getenv("AQL_KIT_ID", "92ee721d-f3c0-4a76-8e28-a859d0c17f34")
@@ -34,6 +35,7 @@ HEIGHT = int(os.getenv("AQL_CAMERA_HEIGHT", "1080"))
 FRAME_INTERVAL_MS = max(1, int(os.getenv("AQL_FRAME_INTERVAL_MS", "2000")))
 JPEG_QUALITY = min(95, max(30, int(os.getenv("AQL_JPEG_QUALITY", "70"))))
 REQUEST_TIMEOUT_SECONDS = max(5, int(os.getenv("AQL_REQUEST_TIMEOUT_SECONDS", "30")))
+HEARTBEAT_INTERVAL_SECONDS = max(15, int(os.getenv("AQL_HEARTBEAT_INTERVAL_SECONDS", "120")))
 OFFLINE_DIR = Path(os.getenv("AQL_OFFLINE_DIR", "/var/lib/aql-vision/offline"))
 OFFLINE_BUFFER_HOURS = max(1, int(os.getenv("AQL_OFFLINE_BUFFER_HOURS", "72")))
 
@@ -135,6 +137,29 @@ def upload_frame(session: requests.Session, jpeg: bytes, captured_at: str) -> No
         raise RuntimeError(f"Upload failed ({response.status_code}): {detail}")
 
 
+def send_heartbeat(session: requests.Session, camera_ok: bool) -> int:
+    response = session.post(
+        HEARTBEAT_URL,
+        headers={"X-AQL-Device-Token": DEVICE_TOKEN},
+        json={
+            "kit_id": KIT_ID,
+            "camera_ids": [CAMERA_ID],
+            "camera_codes": [CAMERA_CODE],
+            "sensor_ids": [],
+            "status": "online",
+            "camera_ok": camera_ok,
+            "sensors_ok": True,
+            "timestamp": utc_now(),
+            "metadata": {"agent": "aql-vision-raspberry", "version": "1.1"},
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Heartbeat failed ({response.status_code}): {response.text[:500].strip()}")
+    payload = response.json()
+    return max(15, int(payload.get("next_heartbeat_seconds", HEARTBEAT_INTERVAL_SECONDS)))
+
+
 def store_offline(jpeg: bytes, captured_at: str) -> None:
     OFFLINE_DIR.mkdir(parents=True, exist_ok=True)
     safe_time = captured_at.replace(":", "-")
@@ -174,11 +199,20 @@ def main() -> int:
     session = requests.Session()
     camera = open_camera()
     next_capture = time.monotonic()
+    next_heartbeat = 0.0
     failures = 0
     print(f"AQL Vision agent started: {CAMERA_CODE} -> {LIVE_FEED_PATH}", flush=True)
 
     try:
         while running:
+            if time.monotonic() >= next_heartbeat:
+                try:
+                    heartbeat_interval = send_heartbeat(session, failures == 0)
+                    next_heartbeat = time.monotonic() + heartbeat_interval
+                    print(f"{utc_now()} heartbeat OK; next in {heartbeat_interval}s", flush=True)
+                except Exception as error:
+                    next_heartbeat = time.monotonic() + 15
+                    print(f"{utc_now()} heartbeat error: {error}", file=sys.stderr, flush=True)
             wait = next_capture - time.monotonic()
             if wait > 0:
                 time.sleep(min(wait, 0.25))

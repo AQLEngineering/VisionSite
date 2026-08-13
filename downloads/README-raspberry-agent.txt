@@ -1,6 +1,10 @@
 AQL Vision — instalação no Raspberry Pi
 ========================================
 
+Ao descarregar a partir do botão do kit, o website entrega também um JSON com
+as câmaras, sensores, limites, intervalos e dados de heartbeat ligados a esse kit.
+Este pacote contém o agente comum que executa a captura e o heartbeat.
+
 1. Instalar a câmara e dependências:
 
    sudo apt update
