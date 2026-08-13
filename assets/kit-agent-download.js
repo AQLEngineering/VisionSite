@@ -1,5 +1,5 @@
 const SUPABASE_URL = 'https://djeijlkqypvaznmlvtxe.supabase.co';
-const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqZWlqbGtxeXB2YXpubWx2dHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0MjE0OTksImV4cCI6MjA3Nzk5NzQ5OX0.h7bUzjND3FYyCmL-WX0x7vC3Ll9AZXkzlW0etOK4sDI';
+const ANON_KEY = 'sb_publishable__gKHTQEwUBtQqcMi0-XNiQ_cU4fpPAN';
 let selectedKitId = null;
 
 const safeName = (value) => String(value || 'kit').normalize('NFKD').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
