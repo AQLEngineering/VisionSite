@@ -179,8 +179,14 @@ async function addModelControls(editor, footer, scrollArea) {
           vision_model_policy: policy.value,
           vision_model_version: policy.value === 'pinned' ? Number(version.value) : null,
         });
-        status.textContent = project.value ? 'Associação guardada. O Raspberry receberá o modelo automaticamente.' : 'Associação removida.';
+        const selectedProject = payload.projects.find((item) => item.id === project.value);
+        status.textContent = project.value && !(selectedProject?.versions || []).some((item) => item.edge_status === 'approved')
+          ? 'Associação guardada. Ainda tens de aprovar uma versão para Edge no AQL Vision Lab.'
+          : project.value ? 'Associação guardada. O Raspberry receberá o modelo automaticamente.' : 'Associação removida.';
         save.textContent = 'Guardado';
+        const oldRules = editor.querySelector('[data-aql-alert-rules="true"]');
+        oldRules?.remove();
+        await addAlertRuleControls(editor, footer, scrollArea);
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : 'Não foi possível guardar.';
         save.textContent = 'Guardar modelo Edge';
@@ -329,7 +335,11 @@ async function addAlertRuleControls(editor, footer, scrollArea) {
     if (!panel.isConnected) return;
     const status = panel.querySelector('[data-rule-status]');
     const classes = payload.model?.classes || [];
-    status.textContent = payload.model ? `Modelo v${payload.model.version}: ${classes.length} classe(s). A gravidade vem da regra, não da percentagem de confiança.` : 'Associa primeiro um modelo Edge ao kit para obter as classes.';
+    status.textContent = payload.model
+      ? payload.model.edge_deployable
+        ? `Modelo v${payload.model.version}: ${classes.length} classe(s). A gravidade vem da regra, não da percentagem de confiança.`
+        : `Classes obtidas da v${payload.model.version}, ainda em rascunho. Aprova uma versão no AQL Vision Lab para o Raspberry poder inferir.`
+      : 'Associa primeiro um projeto do AQL Vision Lab ao kit para obter as classes.';
     const list = document.createElement('div'); list.style.cssText = 'display:grid;gap:12px';
     const appendRule = (rule = {}) => list.append(ruleCard(rule, classes));
     (payload.rules || []).forEach(appendRule);

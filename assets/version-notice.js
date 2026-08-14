@@ -1,4 +1,4 @@
-const CURRENT_BUILD = 'vision-2026-08-14.6';
+const CURRENT_BUILD = 'vision-2026-08-14.7';
 const VERSION_CHECK_INTERVAL = 60_000;
 let updateNoticeVisible = false;
 
