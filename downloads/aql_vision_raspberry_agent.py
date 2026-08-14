@@ -9,6 +9,7 @@ stored in this file.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import signal
 import sys
@@ -23,6 +24,7 @@ import requests
 SUPABASE_URL = os.getenv("AQL_SUPABASE_URL", "https://djeijlkqypvaznmlvtxe.supabase.co").rstrip("/")
 UPLOAD_URL = os.getenv("AQL_CAPTURE_UPLOAD_URL", f"{SUPABASE_URL}/functions/v1/vision-captures/live")
 HEARTBEAT_URL = os.getenv("AQL_HEARTBEAT_URL", f"{SUPABASE_URL}/functions/v1/vision-device-heartbeat")
+MODEL_RESOLVE_URL = os.getenv("AQL_MODEL_RESOLVE_URL", f"{SUPABASE_URL}/functions/v1/vision-kit-model")
 DEVICE_TOKEN = os.getenv("AQL_DEVICE_TOKEN", "").strip()
 
 KIT_ID = os.getenv("AQL_KIT_ID", "92ee721d-f3c0-4a76-8e28-a859d0c17f34")
@@ -38,6 +40,8 @@ REQUEST_TIMEOUT_SECONDS = max(5, int(os.getenv("AQL_REQUEST_TIMEOUT_SECONDS", "3
 HEARTBEAT_INTERVAL_SECONDS = max(15, int(os.getenv("AQL_HEARTBEAT_INTERVAL_SECONDS", "120")))
 OFFLINE_DIR = Path(os.getenv("AQL_OFFLINE_DIR", "/var/lib/aql-vision/offline"))
 OFFLINE_BUFFER_HOURS = max(1, int(os.getenv("AQL_OFFLINE_BUFFER_HOURS", "72")))
+MODEL_DIR = Path(os.getenv("AQL_MODEL_DIR", "/var/lib/aql-vision/models"))
+MODEL_SYNC_INTERVAL_SECONDS = max(60, int(os.getenv("AQL_MODEL_SYNC_INTERVAL_SECONDS", "300")))
 
 
 class Camera(Protocol):
@@ -150,7 +154,7 @@ def send_heartbeat(session: requests.Session, camera_ok: bool) -> int:
             "camera_ok": camera_ok,
             "sensors_ok": True,
             "timestamp": utc_now(),
-            "metadata": {"agent": "aql-vision-raspberry", "version": "1.1"},
+            "metadata": {"agent": "aql-vision-raspberry", "version": "1.2"},
         },
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
@@ -158,6 +162,57 @@ def send_heartbeat(session: requests.Session, camera_ok: bool) -> int:
         raise RuntimeError(f"Heartbeat failed ({response.status_code}): {response.text[:500].strip()}")
     payload = response.json()
     return max(15, int(payload.get("next_heartbeat_seconds", HEARTBEAT_INTERVAL_SECONDS)))
+
+
+def sync_model(session: requests.Session) -> None:
+    """Resolve the kit release and atomically install a verified ONNX model."""
+    response = session.post(
+        MODEL_RESOLVE_URL,
+        headers={"X-AQL-Device-Token": DEVICE_TOKEN},
+        json={"kit_id": KIT_ID},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if response.status_code in (404, 409):
+        print(f"{utc_now()} model not configured: {response.json().get('error', 'unavailable')}", flush=True)
+        return
+    if not response.ok:
+        raise RuntimeError(f"Model resolve failed ({response.status_code}): {response.text[:500].strip()}")
+    release = response.json()
+    expected_hash = str(release.get("sha256") or "").lower()
+    version = int(release["version"])
+    project_id = str(release["project_id"])
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    current_path = MODEL_DIR / "current.json"
+    if current_path.exists():
+        try:
+            current = json.loads(current_path.read_text(encoding="utf-8"))
+            if current.get("project_id") == project_id and int(current.get("version", 0)) == version and (MODEL_DIR / "current.onnx").exists():
+                return
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    download = session.get(str(release["download_url"]), timeout=max(60, REQUEST_TIMEOUT_SECONDS), stream=True)
+    download.raise_for_status()
+    temporary = MODEL_DIR / "incoming.onnx"
+    digest = hashlib.sha256()
+    with temporary.open("wb") as target:
+        for chunk in download.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                digest.update(chunk)
+                target.write(chunk)
+    actual_hash = digest.hexdigest()
+    if expected_hash and actual_hash != expected_hash:
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(f"ONNX SHA-256 mismatch: expected {expected_hash}, got {actual_hash}")
+    active = MODEL_DIR / "current.onnx"
+    previous = MODEL_DIR / "previous.onnx"
+    if active.exists():
+        os.replace(active, previous)
+    os.replace(temporary, active)
+    metadata = {key: release.get(key) for key in ("project_id", "policy", "version", "sha256", "size", "task", "classes", "imgsz")}
+    pending_metadata = MODEL_DIR / "current.json.tmp"
+    pending_metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    os.replace(pending_metadata, current_path)
+    print(f"{utc_now()} ONNX v{version} installed ({actual_hash[:12]}…)", flush=True)
 
 
 def store_offline(jpeg: bytes, captured_at: str) -> None:
@@ -200,11 +255,18 @@ def main() -> int:
     camera = open_camera()
     next_capture = time.monotonic()
     next_heartbeat = 0.0
+    next_model_sync = 0.0
     failures = 0
     print(f"AQL Vision agent started: {CAMERA_CODE} -> {LIVE_FEED_PATH}", flush=True)
 
     try:
         while running:
+            if time.monotonic() >= next_model_sync:
+                try:
+                    sync_model(session)
+                except Exception as error:
+                    print(f"{utc_now()} model sync error: {error}", file=sys.stderr, flush=True)
+                next_model_sync = time.monotonic() + MODEL_SYNC_INTERVAL_SECONDS
             if time.monotonic() >= next_heartbeat:
                 try:
                     heartbeat_interval = send_heartbeat(session, failures == 0)

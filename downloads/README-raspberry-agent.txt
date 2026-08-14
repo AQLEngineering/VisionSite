@@ -12,7 +12,7 @@ Este pacote contém o agente comum que executa a captura e o heartbeat.
 
 2. Copiar os ficheiros:
 
-   sudo mkdir -p /opt/aql-vision /etc/aql-vision /var/lib/aql-vision/offline
+   sudo mkdir -p /opt/aql-vision /etc/aql-vision /var/lib/aql-vision/offline /var/lib/aql-vision/models
    sudo cp aql_vision_raspberry_agent.py /opt/aql-vision/
    sudo cp aql-vision-agent.env.example /etc/aql-vision/agent.env
    sudo cp aql-vision-raspberry-agent.service /etc/systemd/system/
@@ -41,3 +41,6 @@ Este pacote contém o agente comum que executa a captura e o heartbeat.
 
 O token nunca deve ser colocado diretamente dentro do script Python.
 O servidor guarda apenas o hash e limita esta credencial ao kit e à câmara.
+O agente consulta periodicamente o modelo associado ao kit, valida o SHA-256 e
+instala o ONNX de forma atómica em /var/lib/aql-vision/models/current.onnx.
+O modelo anterior permanece em previous.onnx para permitir recuperação local.

@@ -59,6 +59,89 @@ async function downloadKitAgent(kitId) {
   }, 450);
 }
 
+async function modelRequest(kitId, method = 'GET', body = null) {
+  const sessionToken = accessToken();
+  if (!sessionToken) throw new Error('Sessão autenticada não encontrada. Volta a iniciar sessão.');
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/vision-kit-model?kit_id=${encodeURIComponent(kitId)}`, {
+    method,
+    headers: { apikey: ANON_KEY, Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify({ kit_id: kitId, ...body }) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
+function field(label, input) {
+  const wrapper = document.createElement('label');
+  wrapper.style.cssText = 'display:grid;gap:8px;color:#e2e8f0;font-size:14px;font-weight:700';
+  const title = document.createElement('span');
+  title.textContent = label;
+  input.style.cssText = 'min-height:48px;width:100%;border:1px solid rgba(71,85,105,.8);border-radius:12px;background:#0f172a;color:#e2e8f0;padding:0 14px;font:inherit';
+  wrapper.append(title, input);
+  return wrapper;
+}
+
+async function addModelControls(editor, footer) {
+  if (editor.querySelector('[data-aql-model-controls="true"]') || !selectedKitId) return;
+  const panel = document.createElement('section');
+  panel.dataset.aqlModelControls = 'true';
+  panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(56,189,248,.28);border-radius:16px;background:rgba(14,165,233,.06)';
+  panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Modelo de inferência Edge</div><div data-status style="color:#94a3b8;font-size:13px">A carregar projetos do AQL Vision Lab…</div>';
+  footer.parentElement?.insertBefore(panel, footer);
+  try {
+    const payload = await modelRequest(selectedKitId);
+    if (!panel.isConnected || selectedKitId !== payload.assignment.kit_id) return;
+    const project = document.createElement('select');
+    project.append(new Option('Sem modelo associado', ''));
+    payload.projects.forEach((item) => project.append(new Option(`${item.name} — ${item.study_object}`, item.id)));
+    const policy = document.createElement('select');
+    policy.append(new Option('Usar sempre a última versão aprovada', 'latest_approved'), new Option('Fixar uma versão específica', 'pinned'));
+    const version = document.createElement('select');
+    const status = panel.querySelector('[data-status]');
+    const refreshVersions = () => {
+      const selected = payload.projects.find((item) => item.id === project.value);
+      version.replaceChildren();
+      (selected?.versions || []).forEach((item) => version.append(new Option(`v${item.version}${item.edge_status === 'approved' ? ' — aprovada' : ' — anterior'}`, String(item.version))));
+      version.disabled = policy.value !== 'pinned';
+      version.parentElement.style.display = policy.value === 'pinned' ? 'grid' : 'none';
+    };
+    project.value = payload.assignment.vision_lab_project_id || '';
+    policy.value = payload.assignment.vision_model_policy || 'latest_approved';
+    panel.append(field('Projeto do AQL Vision Lab', project), field('Política da versão', policy), field('Versão ONNX fixa', version));
+    project.addEventListener('change', refreshVersions);
+    policy.addEventListener('change', refreshVersions);
+    refreshVersions();
+    if (payload.assignment.vision_model_version) version.value = String(payload.assignment.vision_model_version);
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Guardar modelo Edge';
+    save.style.cssText = 'min-height:48px;border:1px solid rgba(56,189,248,.55);border-radius:12px;background:rgba(14,165,233,.18);color:#7dd3fc;font-weight:800;cursor:pointer';
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      save.textContent = 'A guardar…';
+      try {
+        await modelRequest(selectedKitId, 'PATCH', {
+          vision_lab_project_id: project.value || null,
+          vision_model_policy: policy.value,
+          vision_model_version: policy.value === 'pinned' ? Number(version.value) : null,
+        });
+        status.textContent = project.value ? 'Associação guardada. O Raspberry receberá o modelo automaticamente.' : 'Associação removida.';
+        save.textContent = 'Guardado';
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : 'Não foi possível guardar.';
+        save.textContent = 'Guardar modelo Edge';
+      } finally {
+        save.disabled = false;
+      }
+    });
+    panel.append(save);
+    status.textContent = 'A versão é resolvida pelo servidor; o endereço privado do ficheiro nunca fica gravado no kit.';
+  } catch (error) {
+    panel.querySelector('[data-status]').textContent = error instanceof Error ? error.message : 'Não foi possível carregar os modelos.';
+  }
+}
+
 function decorateEdgeEditor() {
   if (!document.body?.textContent?.includes('Editar Unidades Edge')) return;
   const saveButton = Array.from(document.querySelectorAll('button')).find((button) => {
@@ -78,6 +161,8 @@ function decorateEdgeEditor() {
   if (!editor || editor === document.body || editor.querySelector('[data-aql-kit-agent-button="true"]')) return;
   const footer = saveButton?.parentElement;
   if (!footer) return;
+
+  addModelControls(editor, footer);
 
   const button = document.createElement('button');
   button.type = 'button';
