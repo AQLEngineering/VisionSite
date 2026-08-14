@@ -46,3 +46,13 @@ instala o ONNX de forma atómica em /var/lib/aql-vision/models/current.onnx.
 O modelo anterior permanece em previous.onnx para permitir recuperação local.
 Os comandos Vídeo e Sondas são consultados a cada 5 segundos. Parar uma
 aquisição não desliga o agente nem o heartbeat, permitindo retomar remotamente.
+
+ALERTAS DE INFERÊNCIA
+---------------------
+As regras são configuradas no editor do kit no AQL Vision. O pós-processamento
+ONNX chama publish_detections() com a classe, confiança e medidas observadas.
+O servidor aplica a persistência N-em-M, cooldown e severidade.
+
+Para distinguir estado inicial/avançado pela lesão, devem ser enviados
+lesion_area e subject_area. A confiança do modelo nunca é tratada como
+gravidade.

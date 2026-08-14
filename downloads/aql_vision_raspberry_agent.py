@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Optional, Protocol
 
 import requests
 
@@ -26,6 +26,7 @@ UPLOAD_URL = os.getenv("AQL_CAPTURE_UPLOAD_URL", f"{SUPABASE_URL}/functions/v1/v
 HEARTBEAT_URL = os.getenv("AQL_HEARTBEAT_URL", f"{SUPABASE_URL}/functions/v1/vision-device-heartbeat")
 MODEL_RESOLVE_URL = os.getenv("AQL_MODEL_RESOLVE_URL", f"{SUPABASE_URL}/functions/v1/vision-kit-model")
 CONTROL_URL = os.getenv("AQL_ACQUISITION_CONTROL_URL", f"{SUPABASE_URL}/functions/v1/vision-device-control")
+ALERT_EVALUATOR_URL = os.getenv("AQL_ALERT_EVALUATOR_URL", f"{SUPABASE_URL}/functions/v1/vision-alert-rules")
 DEVICE_TOKEN = os.getenv("AQL_DEVICE_TOKEN", "").strip()
 
 KIT_ID = os.getenv("AQL_KIT_ID", "92ee721d-f3c0-4a76-8e28-a859d0c17f34")
@@ -231,6 +232,46 @@ def fetch_acquisition_control(session: requests.Session) -> tuple[bool, bool, in
     video = acquisition.get("video") or {}
     sensors = acquisition.get("sensors") or {}
     return bool(video.get("enabled", False)), bool(sensors.get("enabled", False)), max(2, int(payload.get("poll_after_seconds", CONTROL_POLL_SECONDS)))
+
+
+def publish_detections(
+    session: requests.Session,
+    detections: list[dict],
+    captured_at: str,
+    image_url: Optional[str] = None,
+    capture_id: Optional[str] = None,
+) -> list[dict]:
+    """Send model evidence to the rule engine.
+
+    Call this after ONNX post-processing. A detection should contain
+    class_label, confidence and optionally bbox, mask_area, lesion_area and
+    subject_area. The server owns persistence, cooldown and alert severity.
+    """
+    model = {}
+    metadata_path = MODEL_DIR / "current.json"
+    if metadata_path.exists():
+        try:
+            model = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            model = {}
+    response = session.post(
+        ALERT_EVALUATOR_URL,
+        headers={"X-AQL-Device-Token": DEVICE_TOKEN},
+        json={
+            "kit_id": KIT_ID,
+            "camera_id": CAMERA_ID,
+            "capture_id": capture_id,
+            "image_url": image_url,
+            "captured_at": captured_at,
+            "frame": {"width": WIDTH, "height": HEIGHT},
+            "model": {"project_id": model.get("project_id"), "version": model.get("version")},
+            "detections": detections,
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Alert evaluation failed ({response.status_code}): {response.text[:500].strip()}")
+    return response.json().get("alerts", [])
 
 
 def store_offline(jpeg: bytes, captured_at: str) -> None:

@@ -85,6 +85,19 @@ async function controlRequest(kitId, method = 'GET', body = null) {
   return payload;
 }
 
+async function alertRulesRequest(kitId, method = 'GET', body = null) {
+  const sessionToken = accessToken();
+  if (!sessionToken) throw new Error('Sessão autenticada não encontrada. Volta a iniciar sessão.');
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/vision-alert-rules?kit_id=${encodeURIComponent(kitId)}`, {
+    method,
+    headers: { apikey: ANON_KEY, Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify({ kit_id: kitId, ...body }) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
 function field(label, input) {
   const wrapper = document.createElement('label');
   wrapper.style.cssText = 'display:grid;gap:8px;color:#e2e8f0;font-size:14px;font-weight:700';
@@ -219,6 +232,99 @@ async function addAcquisitionControls(editor, footer) {
   }
 }
 
+function compactInput(type = 'text') {
+  const input = document.createElement('input');
+  input.type = type;
+  input.style.cssText = 'min-height:42px;width:100%;border:1px solid rgba(71,85,105,.8);border-radius:10px;background:#0f172a;color:#e2e8f0;padding:0 11px;font:inherit';
+  return input;
+}
+
+function ruleCard(rule, classes, onDelete) {
+  const card = document.createElement('div');
+  card.style.cssText = 'display:grid;gap:11px;padding:14px;border:1px solid rgba(148,163,184,.2);border-radius:14px;background:rgba(15,23,42,.65)';
+  card.dataset.ruleId = rule.rule_id || '';
+  const name = compactInput(); name.value = rule.name || 'Nova regra';
+  const classLabel = document.createElement('select');
+  [...new Set([...(classes || []), rule.class_label].filter(Boolean))].forEach((item) => classLabel.append(new Option(item, item)));
+  if (!classLabel.options.length) classLabel.append(new Option('Escreve a classe no nome do modelo primeiro', ''));
+  classLabel.value = rule.class_label || classLabel.options[0]?.value || '';
+  const confidence = compactInput('number'); confidence.min = '0'; confidence.max = '100'; confidence.step = '1'; confidence.value = String(Math.round(Number(rule.min_confidence ?? .6) * 100));
+  const metric = document.createElement('select');
+  [['presence','Presença da classe'],['count','Contagem'],['bbox_frame_ratio','Área da caixa / imagem'],['mask_frame_ratio','Área da máscara / imagem'],['lesion_subject_ratio','Área da lesão / sujeito']]
+    .forEach(([value,label]) => metric.append(new Option(label,value)));
+  metric.value = rule.metric || 'presence';
+  const threshold = compactInput('number'); threshold.min = '0'; threshold.step = '0.1';
+  threshold.value = metric.value === 'count' ? String(rule.min_count ?? 1) : String(Math.round(Number(rule.min_metric ?? 0) * 1000) / 10);
+  const severity = document.createElement('select');
+  [['low','Baixa'],['medium','Média'],['high','Alta'],['critical','Crítica']].forEach(([value,label]) => severity.append(new Option(label,value)));
+  severity.value = rule.severity || 'medium';
+  const hits = compactInput('number'); hits.min = '1'; hits.value = String(rule.persistence_hits ?? 3);
+  const windowSize = compactInput('number'); windowSize.min = '1'; windowSize.max = '100'; windowSize.value = String(rule.persistence_window ?? 5);
+  const cooldown = compactInput('number'); cooldown.min = '0'; cooldown.value = String(rule.cooldown_seconds ?? 300);
+  [classLabel, metric, severity].forEach((input) => { input.style.cssText = name.style.cssText; });
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px';
+  grid.append(field('Nome da regra', name), field('Classe do modelo', classLabel), field('Confiança mínima (%)', confidence), field('Métrica de gravidade', metric), field('Limiar (n.º ou %)', threshold), field('Severidade do alerta', severity), field('Persistência: acertos', hits), field('Em quantos frames', windowSize), field('Cooldown (segundos)', cooldown));
+  const explanation = document.createElement('div');
+  explanation.style.cssText = 'color:#94a3b8;font-size:12px;line-height:1.5';
+  const explain = () => {
+    explanation.textContent = metric.value === 'lesion_subject_ratio'
+      ? 'Exige segmentação/pós-processamento que envie a área da lesão e do sujeito. Não usa a confiança como gravidade.'
+      : metric.value === 'presence' ? 'Dispara pela presença confirmada da classe; o limiar de gravidade não é usado.'
+      : 'O limiar percentual mede área real relativa; a confiança apenas filtra deteções pouco seguras.';
+    threshold.parentElement.style.display = metric.value === 'presence' ? 'none' : 'grid';
+  };
+  metric.addEventListener('change', explain); explain();
+  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remover regra';
+  remove.style.cssText = 'min-height:40px;border:1px solid rgba(248,113,113,.4);border-radius:10px;background:rgba(239,68,68,.08);color:#fca5a5;font-weight:700;cursor:pointer';
+  remove.addEventListener('click', () => { card.remove(); onDelete?.(); });
+  card.append(grid, explanation, remove);
+  card.readRule = () => ({
+    ...(card.dataset.ruleId ? { rule_id: card.dataset.ruleId } : {}), name: name.value.trim(), class_label: classLabel.value,
+    min_confidence: Number(confidence.value) / 100, metric: metric.value,
+    min_metric: metric.value === 'presence' || metric.value === 'count' ? null : Number(threshold.value) / 100,
+    min_count: metric.value === 'count' ? Number(threshold.value) : 1,
+    persistence_hits: Number(hits.value), persistence_window: Number(windowSize.value), cooldown_seconds: Number(cooldown.value),
+    severity: severity.value, enabled: true,
+  });
+  return card;
+}
+
+async function addAlertRuleControls(editor, footer) {
+  if (editor.querySelector('[data-aql-alert-rules="true"]') || !selectedKitId) return;
+  const panel = document.createElement('section');
+  panel.dataset.aqlAlertRules = 'true';
+  panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(251,191,36,.27);border-radius:16px;background:rgba(245,158,11,.05)';
+  panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Regras de alerta por inferência</div><div data-rule-status style="color:#94a3b8;font-size:13px">A carregar classes e regras…</div>';
+  footer.parentElement?.insertBefore(panel, footer);
+  try {
+    const payload = await alertRulesRequest(selectedKitId);
+    if (!panel.isConnected) return;
+    const status = panel.querySelector('[data-rule-status]');
+    const classes = payload.model?.classes || [];
+    status.textContent = payload.model ? `Modelo v${payload.model.version}: ${classes.length} classe(s). A gravidade vem da regra, não da percentagem de confiança.` : 'Associa primeiro um modelo Edge ao kit para obter as classes.';
+    const list = document.createElement('div'); list.style.cssText = 'display:grid;gap:12px';
+    const appendRule = (rule = {}) => list.append(ruleCard(rule, classes));
+    (payload.rules || []).forEach(appendRule);
+    const add = document.createElement('button'); add.type = 'button'; add.textContent = 'Adicionar regra';
+    add.style.cssText = 'min-height:44px;border:1px dashed rgba(251,191,36,.5);border-radius:11px;background:rgba(245,158,11,.08);color:#fde68a;font-weight:800;cursor:pointer';
+    add.addEventListener('click', () => appendRule({ class_label: classes[0] || '', min_confidence: .6, metric: 'presence', severity: 'medium', persistence_hits: 3, persistence_window: 5, cooldown_seconds: 300 }));
+    const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Guardar regras de alerta';
+    save.style.cssText = 'min-height:48px;border:1px solid rgba(251,191,36,.5);border-radius:12px;background:rgba(245,158,11,.14);color:#fde68a;font-weight:800;cursor:pointer';
+    save.addEventListener('click', async () => {
+      save.disabled = true; save.textContent = 'A guardar…';
+      try {
+        const rules = Array.from(list.children).map((card) => card.readRule());
+        await alertRulesRequest(selectedKitId, 'PUT', { rules });
+        status.textContent = `${rules.length} regra(s) guardada(s). O próximo resultado do Edge já será avaliado.`;
+        save.textContent = 'Guardado';
+      } catch (error) { status.textContent = error instanceof Error ? error.message : 'Não foi possível guardar.'; save.textContent = 'Guardar regras de alerta'; }
+      finally { save.disabled = false; }
+    });
+    panel.append(list, add, save);
+  } catch (error) { panel.querySelector('[data-rule-status]').textContent = error instanceof Error ? error.message : 'Não foi possível carregar as regras.'; }
+}
+
 function fixDeviceTimeCard() {
   const label = Array.from(document.querySelectorAll('div,span,p')).find((element) => element.children.length === 0 && element.textContent?.trim() === 'DEVICE');
   const card = label?.parentElement;
@@ -257,6 +363,7 @@ function decorateEdgeEditor() {
 
   addModelControls(editor, footer);
   addAcquisitionControls(editor, footer);
+  addAlertRuleControls(editor, footer);
 
   const button = document.createElement('button');
   button.type = 'button';
