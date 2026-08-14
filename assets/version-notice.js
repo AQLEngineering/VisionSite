@@ -1,4 +1,4 @@
-const CURRENT_BUILD = 'vision-2026-08-13.5';
+const CURRENT_BUILD = 'vision-2026-08-14.6';
 const VERSION_CHECK_INTERVAL = 60_000;
 let updateNoticeVisible = false;
 
@@ -29,13 +29,34 @@ function showUpdateNotice() {
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = 'A atualizar…';
-    if ('serviceWorker' in navigator) {
-      const registration = await navigator.serviceWorker.getRegistration();
-      await registration?.update().catch(() => {});
+    sessionStorage.setItem('aqlVisionApplyingUpdate', '1');
+    sessionStorage.setItem('aqlVisionRestoreAfterUpdate', String(window.scrollY));
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map(async (registration) => {
+          await registration.update().catch(() => {});
+          registration.waiting?.postMessage({ type: 'SKIP_WAITING' });
+        }));
+      }
+    } finally {
+      const next = new URL(window.location.href);
+      next.searchParams.set('aql_build', Date.now().toString());
+      window.location.replace(next.toString());
     }
-    window.location.reload();
   });
   document.body.appendChild(notice);
+}
+
+const restoreAfterUpdate = sessionStorage.getItem('aqlVisionRestoreAfterUpdate');
+if (restoreAfterUpdate !== null) {
+  sessionStorage.removeItem('aqlVisionRestoreAfterUpdate');
+  sessionStorage.removeItem('aqlVisionApplyingUpdate');
+  window.setTimeout(() => window.scrollTo({ top: Number(restoreAfterUpdate) || 0, behavior: 'instant' }), 80);
 }
 
 async function checkForUpdate() {
