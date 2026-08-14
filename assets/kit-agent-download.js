@@ -72,6 +72,19 @@ async function modelRequest(kitId, method = 'GET', body = null) {
   return payload;
 }
 
+async function controlRequest(kitId, method = 'GET', body = null) {
+  const sessionToken = accessToken();
+  if (!sessionToken) throw new Error('Sessão autenticada não encontrada. Volta a iniciar sessão.');
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/vision-device-control?kit_id=${encodeURIComponent(kitId)}`, {
+    method,
+    headers: { apikey: ANON_KEY, Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify({ kit_id: kitId, ...body }) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
 function field(label, input) {
   const wrapper = document.createElement('label');
   wrapper.style.cssText = 'display:grid;gap:8px;color:#e2e8f0;font-size:14px;font-weight:700';
@@ -142,6 +155,86 @@ async function addModelControls(editor, footer) {
   }
 }
 
+function acquisitionButton(label, enabled) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.enabled = String(enabled);
+  const render = () => {
+    const active = button.dataset.enabled === 'true';
+    button.textContent = `${label}: ${active ? 'Em aquisição' : 'Parado'}`;
+    button.style.cssText = `min-height:48px;border:1px solid ${active ? 'rgba(52,211,153,.55)' : 'rgba(248,113,113,.5)'};border-radius:12px;background:${active ? 'rgba(16,185,129,.14)' : 'rgba(239,68,68,.12)'};color:${active ? '#6ee7b7' : '#fca5a5'};font-weight:800;cursor:pointer`;
+  };
+  button.addEventListener('click', () => { button.dataset.enabled = String(button.dataset.enabled !== 'true'); render(); });
+  render();
+  return button;
+}
+
+async function addAcquisitionControls(editor, footer) {
+  if (editor.querySelector('[data-aql-acquisition-controls="true"]') || !selectedKitId) return;
+  const panel = document.createElement('section');
+  panel.dataset.aqlAcquisitionControls = 'true';
+  panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(52,211,153,.25);border-radius:16px;background:rgba(16,185,129,.05)';
+  panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Aquisição do kit</div><div data-control-status style="color:#94a3b8;font-size:13px">A carregar estado…</div>';
+  footer.parentElement?.insertBefore(panel, footer);
+  try {
+    const payload = await controlRequest(selectedKitId);
+    const acquisition = payload.acquisition;
+    if (!panel.isConnected || selectedKitId !== acquisition.kit_id) return;
+    const buttons = {};
+    if (acquisition.video.available) {
+      buttons.video = acquisitionButton('Vídeo', acquisition.video.enabled);
+      panel.append(buttons.video);
+    }
+    if (acquisition.sensors.available) {
+      buttons.sensors = acquisitionButton('Sondas', acquisition.sensors.enabled);
+      panel.append(buttons.sensors);
+    }
+    const status = panel.querySelector('[data-control-status]');
+    status.textContent = Object.keys(buttons).length ? 'Escolhe o estado e guarda. O heartbeat mantém-se ativo.' : 'Este kit ainda não tem câmaras nem sondas ligadas.';
+    if (!Object.keys(buttons).length) return;
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Aplicar Start / Stop';
+    save.style.cssText = 'min-height:48px;border:1px solid rgba(52,211,153,.5);border-radius:12px;background:rgba(16,185,129,.16);color:#6ee7b7;font-weight:800;cursor:pointer';
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      save.textContent = 'A aplicar…';
+      try {
+        await controlRequest(selectedKitId, 'PATCH', {
+          ...(buttons.video ? { video_enabled: buttons.video.dataset.enabled === 'true' } : {}),
+          ...(buttons.sensors ? { sensors_enabled: buttons.sensors.dataset.enabled === 'true' } : {}),
+        });
+        status.textContent = 'Comando guardado. O Edge recebe-o em até 5 segundos.';
+        save.textContent = 'Aplicado';
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : 'Não foi possível aplicar o comando.';
+        save.textContent = 'Aplicar Start / Stop';
+      } finally {
+        save.disabled = false;
+      }
+    });
+    panel.append(save);
+  } catch (error) {
+    panel.querySelector('[data-control-status]').textContent = error instanceof Error ? error.message : 'Não foi possível carregar o estado.';
+  }
+}
+
+function fixDeviceTimeCard() {
+  const label = Array.from(document.querySelectorAll('div,span,p')).find((element) => element.children.length === 0 && element.textContent?.trim() === 'DEVICE');
+  const card = label?.parentElement;
+  if (!card || card.dataset.aqlTimeFixed === 'true') return;
+  card.dataset.aqlTimeFixed = 'true';
+  card.style.minWidth = '190px';
+  card.style.overflow = 'hidden';
+  Array.from(card.querySelectorAll('div,span,p')).forEach((element) => {
+    if (/^\d{2}:\d{2}:\d{2}\.\d{3}$/.test(element.textContent?.trim() || '')) {
+      element.style.fontSize = 'clamp(13px, 1.05vw, 17px)';
+      element.style.whiteSpace = 'nowrap';
+      element.style.letterSpacing = '-0.02em';
+    }
+  });
+}
+
 function decorateEdgeEditor() {
   if (!document.body?.textContent?.includes('Editar Unidades Edge')) return;
   const saveButton = Array.from(document.querySelectorAll('button')).find((button) => {
@@ -163,6 +256,7 @@ function decorateEdgeEditor() {
   if (!footer) return;
 
   addModelControls(editor, footer);
+  addAcquisitionControls(editor, footer);
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -197,6 +291,7 @@ function scheduleEdgeEditorDecoration() {
   window.requestAnimationFrame(() => {
     decorationScheduled = false;
     decorateEdgeEditor();
+    fixDeviceTimeCard();
   });
 }
 

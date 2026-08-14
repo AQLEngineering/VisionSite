@@ -25,6 +25,7 @@ SUPABASE_URL = os.getenv("AQL_SUPABASE_URL", "https://djeijlkqypvaznmlvtxe.supab
 UPLOAD_URL = os.getenv("AQL_CAPTURE_UPLOAD_URL", f"{SUPABASE_URL}/functions/v1/vision-captures/live")
 HEARTBEAT_URL = os.getenv("AQL_HEARTBEAT_URL", f"{SUPABASE_URL}/functions/v1/vision-device-heartbeat")
 MODEL_RESOLVE_URL = os.getenv("AQL_MODEL_RESOLVE_URL", f"{SUPABASE_URL}/functions/v1/vision-kit-model")
+CONTROL_URL = os.getenv("AQL_ACQUISITION_CONTROL_URL", f"{SUPABASE_URL}/functions/v1/vision-device-control")
 DEVICE_TOKEN = os.getenv("AQL_DEVICE_TOKEN", "").strip()
 
 KIT_ID = os.getenv("AQL_KIT_ID", "92ee721d-f3c0-4a76-8e28-a859d0c17f34")
@@ -42,6 +43,7 @@ OFFLINE_DIR = Path(os.getenv("AQL_OFFLINE_DIR", "/var/lib/aql-vision/offline"))
 OFFLINE_BUFFER_HOURS = max(1, int(os.getenv("AQL_OFFLINE_BUFFER_HOURS", "72")))
 MODEL_DIR = Path(os.getenv("AQL_MODEL_DIR", "/var/lib/aql-vision/models"))
 MODEL_SYNC_INTERVAL_SECONDS = max(60, int(os.getenv("AQL_MODEL_SYNC_INTERVAL_SECONDS", "300")))
+CONTROL_POLL_SECONDS = max(2, int(os.getenv("AQL_CONTROL_POLL_SECONDS", "5")))
 
 
 class Camera(Protocol):
@@ -215,6 +217,22 @@ def sync_model(session: requests.Session) -> None:
     print(f"{utc_now()} ONNX v{version} installed ({actual_hash[:12]}…)", flush=True)
 
 
+def fetch_acquisition_control(session: requests.Session) -> tuple[bool, bool, int]:
+    response = session.post(
+        CONTROL_URL,
+        headers={"X-AQL-Device-Token": DEVICE_TOKEN},
+        json={"kit_id": KIT_ID},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Control fetch failed ({response.status_code}): {response.text[:500].strip()}")
+    payload = response.json()
+    acquisition = payload.get("acquisition") or {}
+    video = acquisition.get("video") or {}
+    sensors = acquisition.get("sensors") or {}
+    return bool(video.get("enabled", False)), bool(sensors.get("enabled", False)), max(2, int(payload.get("poll_after_seconds", CONTROL_POLL_SECONDS)))
+
+
 def store_offline(jpeg: bytes, captured_at: str) -> None:
     OFFLINE_DIR.mkdir(parents=True, exist_ok=True)
     safe_time = captured_at.replace(":", "-")
@@ -256,11 +274,24 @@ def main() -> int:
     next_capture = time.monotonic()
     next_heartbeat = 0.0
     next_model_sync = 0.0
+    next_control_poll = 0.0
+    video_enabled = True
+    sensors_enabled = True
     failures = 0
     print(f"AQL Vision agent started: {CAMERA_CODE} -> {LIVE_FEED_PATH}", flush=True)
 
     try:
         while running:
+            if time.monotonic() >= next_control_poll:
+                try:
+                    previous = (video_enabled, sensors_enabled)
+                    video_enabled, sensors_enabled, control_interval = fetch_acquisition_control(session)
+                    next_control_poll = time.monotonic() + control_interval
+                    if previous != (video_enabled, sensors_enabled):
+                        print(f"{utc_now()} acquisition control: video={'ON' if video_enabled else 'OFF'}, sensors={'ON' if sensors_enabled else 'OFF'}", flush=True)
+                except Exception as error:
+                    next_control_poll = time.monotonic() + CONTROL_POLL_SECONDS
+                    print(f"{utc_now()} control error (keeping last state): {error}", file=sys.stderr, flush=True)
             if time.monotonic() >= next_model_sync:
                 try:
                     sync_model(session)
@@ -280,6 +311,8 @@ def main() -> int:
                 time.sleep(min(wait, 0.25))
                 continue
             next_capture = time.monotonic() + FRAME_INTERVAL_MS / 1000
+            if not video_enabled:
+                continue
             captured_at = utc_now()
             try:
                 jpeg = camera.capture()

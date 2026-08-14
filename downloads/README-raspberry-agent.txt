@@ -44,3 +44,5 @@ O servidor guarda apenas o hash e limita esta credencial ao kit e à câmara.
 O agente consulta periodicamente o modelo associado ao kit, valida o SHA-256 e
 instala o ONNX de forma atómica em /var/lib/aql-vision/models/current.onnx.
 O modelo anterior permanece em previous.onnx para permitir recuperação local.
+Os comandos Vídeo e Sondas são consultados a cada 5 segundos. Parar uma
+aquisição não desliga o agente nem o heartbeat, permitindo retomar remotamente.
