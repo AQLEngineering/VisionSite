@@ -108,13 +108,40 @@ function field(label, input) {
   return wrapper;
 }
 
-async function addModelControls(editor, footer) {
+function editorScrollArea(editor, footer) {
+  const projectLabel = Array.from(editor.querySelectorAll('label,span,div,p')).find((element) =>
+    element.children.length === 0 && element.textContent?.trim() === 'Projeto');
+  let current = projectLabel?.parentElement;
+  while (current && current !== editor && current !== footer?.parentElement) {
+    const overflow = getComputedStyle(current).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') return current;
+    current = current.parentElement;
+  }
+  const candidates = Array.from(editor.querySelectorAll('*')).filter((element) => {
+    if (element === footer || footer?.contains(element)) return false;
+    const overflow = getComputedStyle(element).overflowY;
+    return (overflow === 'auto' || overflow === 'scroll') && element.textContent?.includes('Projeto');
+  });
+  return candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
+}
+
+function mountEditorPanel(panel, editor, footer, scrollArea) {
+  if (scrollArea?.isConnected) {
+    scrollArea.append(panel);
+    scrollArea.style.minHeight = '0';
+    scrollArea.style.flex = '1 1 auto';
+    return;
+  }
+  footer.parentElement?.insertBefore(panel, footer);
+}
+
+async function addModelControls(editor, footer, scrollArea) {
   if (editor.querySelector('[data-aql-model-controls="true"]') || !selectedKitId) return;
   const panel = document.createElement('section');
   panel.dataset.aqlModelControls = 'true';
   panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(56,189,248,.28);border-radius:16px;background:rgba(14,165,233,.06)';
   panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Modelo de inferência Edge</div><div data-status style="color:#94a3b8;font-size:13px">A carregar projetos do AQL Vision Lab…</div>';
-  footer.parentElement?.insertBefore(panel, footer);
+  mountEditorPanel(panel, editor, footer, scrollArea);
   try {
     const payload = await modelRequest(selectedKitId);
     if (!panel.isConnected || selectedKitId !== payload.assignment.kit_id) return;
@@ -182,13 +209,13 @@ function acquisitionButton(label, enabled) {
   return button;
 }
 
-async function addAcquisitionControls(editor, footer) {
+async function addAcquisitionControls(editor, footer, scrollArea) {
   if (editor.querySelector('[data-aql-acquisition-controls="true"]') || !selectedKitId) return;
   const panel = document.createElement('section');
   panel.dataset.aqlAcquisitionControls = 'true';
   panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(52,211,153,.25);border-radius:16px;background:rgba(16,185,129,.05)';
   panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Aquisição do kit</div><div data-control-status style="color:#94a3b8;font-size:13px">A carregar estado…</div>';
-  footer.parentElement?.insertBefore(panel, footer);
+  mountEditorPanel(panel, editor, footer, scrollArea);
   try {
     const payload = await controlRequest(selectedKitId);
     const acquisition = payload.acquisition;
@@ -290,13 +317,13 @@ function ruleCard(rule, classes, onDelete) {
   return card;
 }
 
-async function addAlertRuleControls(editor, footer) {
+async function addAlertRuleControls(editor, footer, scrollArea) {
   if (editor.querySelector('[data-aql-alert-rules="true"]') || !selectedKitId) return;
   const panel = document.createElement('section');
   panel.dataset.aqlAlertRules = 'true';
   panel.style.cssText = 'display:grid;gap:14px;margin:20px 28px;padding:18px;border:1px solid rgba(251,191,36,.27);border-radius:16px;background:rgba(245,158,11,.05)';
   panel.innerHTML = '<div style="color:#f8fafc;font-size:17px;font-weight:800">Regras de alerta por inferência</div><div data-rule-status style="color:#94a3b8;font-size:13px">A carregar classes e regras…</div>';
-  footer.parentElement?.insertBefore(panel, footer);
+  mountEditorPanel(panel, editor, footer, scrollArea);
   try {
     const payload = await alertRulesRequest(selectedKitId);
     if (!panel.isConnected) return;
@@ -361,9 +388,10 @@ function decorateEdgeEditor() {
   const footer = saveButton?.parentElement;
   if (!footer) return;
 
-  addModelControls(editor, footer);
-  addAcquisitionControls(editor, footer);
-  addAlertRuleControls(editor, footer);
+  const scrollArea = editorScrollArea(editor, footer);
+  addModelControls(editor, footer, scrollArea);
+  addAcquisitionControls(editor, footer, scrollArea);
+  addAlertRuleControls(editor, footer, scrollArea);
 
   const button = document.createElement('button');
   button.type = 'button';
