@@ -91,7 +91,7 @@ MODEL_RESOLVE_URL = os.environ.get(
 ALERT_EVALUATOR_URL = os.environ.get(
     "AQL_ALERT_EVALUATOR_URL", f"{SUPABASE_URL}/functions/v1/vision-alert-rules"
 ).strip()
-AGENT_VERSION = "2.2.0"
+AGENT_VERSION = "2.2.1"
 AGENT_UPDATE_MANIFEST_URL = os.environ.get(
     "AQL_AGENT_UPDATE_MANIFEST_URL",
     "https://www.aqlvision.com/edge-agent/latest.json",
@@ -453,7 +453,13 @@ async def send_heartbeat(state: RuntimeState) -> None:
 
 async def heartbeat_loop(state: RuntimeState) -> None:
     while state.running:
-        await send_heartbeat(state)
+        try:
+            await send_heartbeat(state)
+        except Exception as exc:
+            print(
+                "[heartbeat] falhou; a captura e o buffer continuam ativos. "
+                f"Nova tentativa mais tarde: {exc}"
+            )
         await asyncio.sleep(state.heartbeat_interval_seconds)
 
 
