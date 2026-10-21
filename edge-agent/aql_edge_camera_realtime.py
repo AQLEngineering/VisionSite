@@ -91,7 +91,7 @@ MODEL_RESOLVE_URL = os.environ.get(
 ALERT_EVALUATOR_URL = os.environ.get(
     "AQL_ALERT_EVALUATOR_URL", f"{SUPABASE_URL}/functions/v1/vision-alert-rules"
 ).strip()
-AGENT_VERSION = "2.2.2"
+AGENT_VERSION = "2.2.1"
 AGENT_UPDATE_MANIFEST_URL = os.environ.get(
     "AQL_AGENT_UPDATE_MANIFEST_URL",
     "https://www.aqlvision.com/edge-agent/latest.json",
@@ -235,7 +235,6 @@ class RuntimeState:
     model_project_id: str = ""
     model_version: int = 0
     model_ready: bool = False
-    realtime_connected: bool = False
 
     def apply_config_row(self, row: dict[str, Any]) -> None:
         if not row or row.get("is_enabled") is False:
@@ -250,6 +249,9 @@ class RuntimeState:
         elif key in {"capture_interval_seconds", "captureIntervalSeconds"}:
             self.frame_interval_ms = seconds_to_frame_interval_ms(value, self.frame_interval_ms)
             print(f"[config] capture_interval_seconds -> frame_interval_ms={self.frame_interval_ms}")
+        elif key in {"heartbeat_interval_seconds", "heartbeatIntervalSeconds"}:
+            self.heartbeat_interval_seconds = clamp_int(value, self.heartbeat_interval_seconds, 15, 3600)
+            print(f"[config] heartbeat_interval_seconds={self.heartbeat_interval_seconds}")
         elif key == f"camera.{self.camera_code}.frame_interval_ms":
             self.frame_interval_ms = clamp_int(value, self.frame_interval_ms, 50, 60000)
             print(f"[config] {key}={self.frame_interval_ms}")
@@ -294,6 +296,12 @@ class RuntimeState:
             seconds_to_frame_interval_ms(config.get("capture_interval_seconds"), self.frame_interval_ms),
             50,
             60000,
+        )
+        self.heartbeat_interval_seconds = clamp_int(
+            config.get("heartbeat_interval_seconds"),
+            self.heartbeat_interval_seconds,
+            15,
+            3600,
         )
         self.storage_bucket = str(config.get("storage_bucket") or config.get("live_capture_bucket") or self.storage_bucket)
         self.jpg_quality = clamp_int(config.get("jpg_quality"), self.jpg_quality, 30, 95)
@@ -635,40 +643,10 @@ async def realtime_loop(supabase: AsyncClient, state: RuntimeState) -> None:
             asyncio.create_task(fetch_initial_config(state))
 
     while state.running:
-        channel = None
         try:
-            presence_key = state.device_id or state.kit_id or state.camera_code
-            connection_lost = asyncio.Event()
-            channel = supabase.channel(
-                f"aql-edge-{state.kit_id or state.kit_name or state.camera_code}",
-                {"config": {"presence": {"key": presence_key}}},
-            )
-
-            async def publish_presence() -> None:
-                await channel.track({
-                    "agent": "aql-vision-raspberry",
-                    "agent_version": AGENT_VERSION,
-                    "kit_id": state.kit_id or None,
-                    "device_id": state.device_id or None,
-                    "camera_id": state.camera_id or None,
-                    "online_at": datetime.now(timezone.utc).isoformat(),
-                })
-                await send_heartbeat(state)
-
-            def on_subscribe(status: Any, error: Any = None) -> None:
-                status_name = str(getattr(status, "value", status)).split(".")[-1].upper()
-                if status_name == "SUBSCRIBED":
-                    state.realtime_connected = True
-                    asyncio.create_task(publish_presence())
-                    print("[realtime] presença online publicada.")
-                elif status_name in {"CHANNEL_ERROR", "TIMED_OUT", "CLOSED"}:
-                    state.realtime_connected = False
-                    print(f"[realtime] canal {status_name.lower()}: {error or 'sem detalhe'}")
-                    connection_lost.set()
-
+            channel = supabase.channel(f"aql-edge-{state.kit_id or state.kit_name or state.camera_code}")
             await (
                 channel
-                .on_presence_sync(callback=lambda: None)
                 .on_postgres_changes(
                     "*",
                     schema="public",
@@ -693,22 +671,15 @@ async def realtime_loop(supabase: AsyncClient, state: RuntimeState) -> None:
                     table="aql_kits",
                     callback=on_kit,
                 )
-                .subscribe(on_subscribe)
+                .subscribe()
             )
             print("[realtime] subscrito a configs/comandos/camaras/kits.")
-            await connection_lost.wait()
+
+            while state.running:
+                await asyncio.sleep(5)
         except Exception as exc:
-            state.realtime_connected = False
             print(f"[realtime] ligação falhou: {exc}. A tentar novamente...")
-        finally:
-            state.realtime_connected = False
-            if channel is not None:
-                try:
-                    await supabase.remove_channel(channel)
-                except Exception:
-                    pass
-        if state.running:
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
 
 
 def encode_frame(frame: Any, jpg_quality: int) -> bytes | None:
